@@ -1043,3 +1043,29 @@ AFTER (per-agent isolation):
 Currently `allowed_tools` is defined but not enforced at AIAgent creation.
 Next step: filter `enabled_toolsets` based on `profile.allowed_tools` before
 passing to AIAgent constructor.
+
+### Pending: Gateway wiring compatibility hardening (Status: WAITING)
+
+Reason:
+- Gateway and other Hermes core paths are high-risk integration points.
+- Permission wiring changes must stay compatible with existing session flow,
+  slash commands, platform adapters, and future core updates.
+
+Pending scope (not implemented yet):
+1. Move gateway message-entry profile wiring to a single deterministic hook
+   (always resolve profile + set `_agent_context` before any tool/API path).
+2. Make invalid/empty agent handling policy-driven per entrypoint
+   (`cli`, `gateway`, `web`, `api_server`) via `security.policy.invalid_agent_behavior`.
+3. Keep a CLI recovery path to avoid self-lockout, while denying unsafe fallback
+   on remote/platform-facing entrypoints by default.
+4. Add compatibility test matrix for gateway:
+   - new session vs resumed session
+   - owner/trusted/guest role transitions
+   - platform-specific routing (`telegram`, `discord`, `api_server`, `cli`)
+   - session/memory isolation under restart/reload conditions
+5. Add audit logs for policy fallback and deny decisions in gateway runtime.
+
+Acceptance criteria:
+- No regression in existing gateway command routing.
+- No silent downgrade to shared session DB where policy says `deny`.
+- Existing non-permission features keep behavior unless explicitly changed by config.

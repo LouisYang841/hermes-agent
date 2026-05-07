@@ -27,6 +27,10 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.actions import tool_invoke_action
+from agent.policy_audit import audit_policy_decision
+from agent.policy_engine import PolicyEngine
+from tools._agent_context import get_current_profile
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
@@ -494,6 +498,7 @@ def _compute_tool_definitions(
 # so if something slips through, the LLM sees a sensible message.
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
+_policy_engine = PolicyEngine()
 
 
 # =========================================================================
@@ -706,6 +711,26 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
 
     try:
+        _profile = get_current_profile()
+        _action = tool_invoke_action(function_name)
+        policy = _policy_engine.evaluate(_profile, _action)
+        audit_policy_decision(
+            allow=policy.allow,
+            action=_action,
+            tool_name=function_name,
+            reason=policy.reason,
+            code=policy.code,
+            profile=_profile,
+        )
+        if not policy.allow:
+            return json.dumps(
+                {
+                    "error": f"Blocked by policy: {policy.reason}",
+                    "code": policy.code,
+                },
+                ensure_ascii=False,
+            )
+
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
