@@ -161,25 +161,36 @@ export const cyberpunkTheme: DashboardTheme = {
 
 export const roseTheme: DashboardTheme = {
   name: "rose",
-  label: "Rosé",
-  description: "Soft pink and warm ivory — easy on the eyes",
+  label: "Light",
+  description: "Bright white — clean and airy like fresh paper",
   palette: {
-    background: { hex: "#1a0f15", alpha: 1 },
-    midground: { hex: "#ffd4e1", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(249, 168, 212, 0.3)",
-    noiseOpacity: 0.9,
+    background: { hex: "#ECE6DE", alpha: 1 },
+    midground: { hex: "#1a1a1a", alpha: 1 },
+    foreground: { hex: "#000000", alpha: 0 },
+    warmGlow: "rgba(0, 0, 0, 0.04)",
+    noiseOpacity: 0,
   },
   typography: {
     ...DEFAULT_TYPOGRAPHY,
-    fontSans: `"Fraunces", Georgia, serif`,
-    fontMono: `"DM Mono", ${SYSTEM_MONO}`,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
     fontUrl:
-      "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Mono:wght@400;500&display=swap",
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap",
   },
   layout: {
     ...DEFAULT_LAYOUT,
-    radius: "1rem",
+    radius: "0.5rem",
+  },
+  colorOverrides: {
+    destructive: "#dc2626",
+    warning: "#d97706",
+    success: "#16a34a",
+  },
+  componentStyles: {
+    backdrop: {
+      fillerBlendMode: "normal",
+      fillerOpacity: "0",
+    },
   },
 };
 
@@ -201,6 +212,35 @@ export const defaultLargeTheme: DashboardTheme = {
   layout: {
     ...DEFAULT_LAYOUT,
     density: "spacious",
+  },
+};
+
+export const paperTheme: DashboardTheme = {
+  name: "paper",
+  label: "Paper",
+  description: "Clean white — bright and airy like a fresh notebook",
+  palette: {
+    background: { hex: "#050505", alpha: 1 },
+    midground: { hex: "#1a1a1a", alpha: 1 },
+    foreground: { hex: "#000000", alpha: 0 },
+    warmGlow: "rgba(0, 0, 0, 0.04)",
+    noiseOpacity: 0,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `\"Inter\", ${SYSTEM_SANS}`,
+    fontMono: `\"JetBrains Mono\", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.5rem",
+  },
+  colorOverrides: {
+    destructive: "#dc2626",
+    warning: "#d97706",
+    success: "#16a34a",
   },
 };
 

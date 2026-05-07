@@ -288,8 +288,11 @@ export default function ProfilesPage() {
                       />
                     ) : (
                       <span className="font-medium text-sm truncate">
-                        {p.name}
+                        {p.agent_name ? `${p.user_name || p.name} → ${p.agent_name}` : p.name}
                       </span>
+                    )}
+                    {p.role && (
+                      <Badge tone="default">{p.role}</Badge>
                     )}
                     {p.is_default && (
                       <Badge tone="secondary">{t.profiles.defaultBadge}</Badge>
@@ -379,7 +382,7 @@ export default function ProfilesPage() {
                       >
                         <Terminal className="h-4 w-4" />
                       </Button>
-                      {!p.is_default && (
+                      {!p.agent_name && !p.is_default && (
                         <Button
                           ghost
                           size="icon"
@@ -393,7 +396,7 @@ export default function ProfilesPage() {
                           <Pencil className="h-4 w-4" />
                         </Button>
                       )}
-                      {!p.is_default && (
+                      {!p.agent_name && !p.is_default && (
                         <Button
                           ghost
                           size="icon"

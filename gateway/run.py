@@ -6164,6 +6164,22 @@ class GatewayRunner:
         # onto subsequent messages in the same session (issue #6508).
         if getattr(session_entry, "is_fresh_reset", False):
             session_entry.is_fresh_reset = False
+        # ── Per-agent profile (AgentRegistry) ──
+        # Resolve on EVERY message — thread-local context must be set regardless
+        # of whether this is a new session. (Was inside `if _is_new_session:` before,
+        # causing UnboundLocalError on second+ message in a session.)
+        _agent_profile = None
+        try:
+            from tools.agent_registry import get_agent_registry
+            _plat_key = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+            _user_id_str = str(source.user_id) if source.user_id else None
+            _reg = get_agent_registry()
+            _agent_profile = _reg.get_or_create(_plat_key, _user_id_str)
+            if _agent_profile:
+                _agent_profile.save_runtime({"last_active_at": time.time()})
+        except Exception:
+            _agent_profile = None
+
         if _is_new_session:
             await self.hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
@@ -6171,6 +6187,40 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
+            # ── Per-user default model from AgentProfile ──
+            # AgentProfile already carries default_model/default_provider
+            # from identities.yaml via AgentRegistry.  No need for a second
+            # identity resolution — just read the profile we already have.
+            if _agent_profile:
+                _default_model = _agent_profile.default_model or ""
+                _default_provider = _agent_profile.default_provider or ""
+            else:
+                _default_model = ""
+                _default_provider = ""
+
+            if _default_model:
+                # Apply per-user default as session override (only on first message)
+                if session_key not in (self._session_model_overrides or {}):
+                    self._session_model_overrides[session_key] = {
+                        "model": _default_model,
+                        "provider": _default_provider,
+                    }
+
+                # Show model notice to everyone
+                _adapter = self.adapters.get(source.platform)
+                if _adapter:
+                    _model = _default_model or _resolve_gateway_model()
+                    _prov = _default_provider or _resolve_gateway_model_provider()
+                    # Friendly provider name
+                    _prov_label = _prov.removeprefix("custom:") if _prov else ""
+                    _note = f"📌 当前模型：{_model}"
+                    if _prov_label:
+                        _note += f"（{_prov_label}）"
+                    try:
+                        _metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                        await _adapter.send(str(source.chat_id), _note, metadata=_metadata)
+                    except Exception:
+                        pass
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -6698,6 +6748,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
+                agent_profile=_agent_profile,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -13012,6 +13063,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        agent_profile = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -13037,6 +13089,19 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event_message_id,
             )
+
+        # ── Per-agent context (thread-local) ──
+        # Set the agent profile for this turn so all tools can read
+        # the correct session DB, memory dir, workspace dir, and toolset.
+        if agent_profile is not None:
+            try:
+                from tools._agent_context import set_current_profile, clear_current_profile
+                set_current_profile(agent_profile)
+            except Exception:
+                pass
+        # Use per-agent session DB when an agent profile is available.
+        from hermes_state import SessionDB
+        _session_db = SessionDB(agent_profile.session_db_path) if agent_profile is not None else self._session_db
 
         from run_agent import AIAgent
         import queue

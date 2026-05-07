@@ -503,6 +503,9 @@ export interface AnalyticsResponse {
 
 export interface ProfileInfo {
   name: string;
+  user_name?: string;
+  agent_name?: string;
+  role?: string;
   path: string;
   is_default: boolean;
   model: string | null;

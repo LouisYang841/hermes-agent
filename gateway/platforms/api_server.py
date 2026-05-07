@@ -768,14 +768,26 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _ensure_session_db(self):
-        """Lazily initialise and return the shared SessionDB instance.
+        """Lazily initialise and return the owner's per-agent SessionDB.
 
-        Sessions are persisted to ``state.db`` so that ``hermes sessions list``
-        shows API-server conversations alongside CLI and gateway ones.
+        Uses AgentRegistry to resolve the owner profile (api_server always
+        maps to the owner identity), then opens its per-agent state.db.
+        Falls back to the shared SessionDB if AgentRegistry is unavailable.
         """
         if self._session_db is None:
             try:
                 from hermes_state import SessionDB
+                # Try per-agent session DB for the owner
+                try:
+                    from tools.agent_registry import get_agent_registry
+                    reg = get_agent_registry()
+                    profile = reg.get_or_create("api_server", None)
+                    if profile:
+                        self._session_db = SessionDB(profile.session_db_path)
+                        return self._session_db
+                except Exception:
+                    pass
+                # Fall back to shared DB
                 self._session_db = SessionDB()
             except Exception as e:
                 logger.debug("SessionDB unavailable for API server: %s", e)
