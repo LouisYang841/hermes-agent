@@ -1,0 +1,49 @@
+diff --git a/cli.py b/cli.py
+index e5af3c88f..b6c7323a4 100644
+--- a/cli.py
++++ b/cli.py
+@@ -8397,6 +8397,7 @@ class HermesCLI:
+ 
+         submitted = False
+         wav_path = None
++        _stop_voice = False  # Flag: don't return inside finally (Python 3.12+ SyntaxWarning)
+         try:
+             if self._voice_recorder is None:
+                 return
+@@ -8466,7 +8467,7 @@ class HermesCLI:
+                     self._voice_continuous = False
+                     self._no_speech_count = 0
+                     _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
+-                    return
++                    _stop_voice = True
+             else:
+                 self._no_speech_count = 0
+ 
+@@ -8484,6 +8485,9 @@ class HermesCLI:
+                         _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+                 threading.Thread(target=_restart_recording, daemon=True).start()
+ 
++        if _stop_voice:
++            return
++
+     def _voice_speak_response_async(self, text: str) -> None:
+         """Schedule TTS and mark it pending before continuous recording can restart."""
+         if not self._voice_tts or not text:
+@@ -10531,14 +10535,14 @@ class HermesCLI:
+                 self.agent.interrupt()
+             else:
+                 # If there's text or images, clear them (like bash).
+-                # If everything is already empty, exit.
++                # If everything is already empty, prompt to use /quit.
+                 if event.app.current_buffer.text or self._attached_images:
+                     event.app.current_buffer.reset()
+                     self._attached_images.clear()
+                     event.app.invalidate()
+                 else:
+-                    self._should_exit = True
+-                    event.app.exit()
++                    print("\n⚡ Use /quit or /exit to close Hermes.")
++                    event.app.invalidate()
+ 
+         # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
+         # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before

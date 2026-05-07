@@ -1,0 +1,17 @@
+diff --git a/web/src/pages/SessionsPage.tsx b/web/src/pages/SessionsPage.tsx
+index dd2ad6b23..a28dc0531 100644
+--- a/web/src/pages/SessionsPage.tsx
++++ b/web/src/pages/SessionsPage.tsx
+@@ -346,6 +346,12 @@ function SessionRow({
+               )}
+               <span className="text-border">&#183;</span>
+               <span>{timeAgo(session.last_active)}</span>
++              <span className="text-border">&#183;</span>
++              <span className="font-mono text-[10px] text-muted-foreground/60 cursor-pointer hover:text-muted-foreground truncate max-w-[160px]"
++                    title={session.id}
++                    onClick={() => { navigator.clipboard.writeText(session.id) }}>
++                {session.id.slice(0, 16)}…
++              </span>
+             </div>
+             {snippet && <SnippetHighlight snippet={snippet} />}
+           </div>

@@ -1,0 +1,26 @@
+diff --git a/web/src/App.tsx b/web/src/App.tsx
+index 7e1ca19f1..6f7c7d7d6 100644
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -22,7 +22,6 @@ import {
+   Code,
+   Cpu,
+   Database,
+-  Download,
+   Eye,
+   FileText,
+   Globe,
+@@ -700,13 +699,6 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
+       runningLabel: t.status.restartingGateway,
+       spin: true,
+     },
+-    {
+-      action: "update",
+-      icon: Download,
+-      label: t.status.updateHermes,
+-      runningLabel: t.status.updatingHermes,
+-      spin: false,
+-    },
+   ];
+ 
+   const handleClick = (action: SystemAction) => {

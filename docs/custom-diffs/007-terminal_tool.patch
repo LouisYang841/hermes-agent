@@ -1,0 +1,132 @@
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index b65af93fa..4807166c7 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -50,7 +50,33 @@ from typing import Optional, Dict, Any, List
+ logger = logging.getLogger(__name__)
+ 
+ 
+-# ---------------------------------------------------------------------------
++# ── Workspace enforcement for non-owner users ─────────────────────────────
++def _terminal_get_identity_info() -> dict:
++    """Get identity from per-thread threading.local() context.
++
++    Each thread has its own identity via threading.local().
++    Fallback to owner when unset (fail-open).
++    """
++    try:
++        from tools._identity_context import get_identity
++        ident = get_identity()
++        if ident:
++            return ident
++    except Exception:
++        pass
++    # Fallback: identity stack empty → default to owner
++    # (fail-open: the system prompt already gates non-owner users;
++    #  code-level identity is defense-in-depth, not the primary gate)
++    return {"name": "unknown", "role": "owner"}
++
++
++def _terminal_workspace_for(identity_name: str) -> Path:
++    """Return the absolute workspace path for a given identity name."""
++    _home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
++    return Path(_home) / "workspaces" / identity_name
++
++
++# ── known sudo-helper paths (telegram_network.py, media utils) ─────────────
+ # Global interrupt event: set by the agent when a user interrupt arrives.
+ # The terminal tool polls this during command execution so it can kill
+ # long-running subprocesses immediately instead of blocking until timeout.
+@@ -2319,6 +2345,92 @@ TERMINAL_SCHEMA = {
+ 
+ 
+ def _handle_terminal(args, **kw):
++    # ── Workspace enforcement for non-owner users ─────────────────────
++    identity = _terminal_get_identity_info()
++    role = identity.get("role", "")
++    # If identity file is missing/invalid → skip enforcement (don't lock out)
++    if role and role != "owner":
++        name = identity.get("name", "unknown")
++        ws = str(_terminal_workspace_for(name))
++        # Force workdir to workspace if not already set
++        if not args.get("workdir"):
++            args["workdir"] = ws
++        # Reject commands that access paths outside workspace
++        # ── Path whitelist: check ALL path-like args against workspace ──
++        # Non-owner users: ANY token that looks like a filesystem path must
++        # resolve inside the workspace.  This catches cat/ls/cp/mv/find/grep
++        # with absolute or tilde paths, cd .., redirects etc. without needing
++        # a command blacklist.  Commands with no path args are fine.
++        def _block_msg(reason: str) -> str:
++            return json.dumps({"output": "", "exit_code": -1, "error": reason})
++        command = args.get("command", "")
++        _ws_safe = str(Path(ws).resolve())
++        for line in command.split(chr(10)):
++            stripped = line.strip()
++            if not stripped or stripped.startswith("#"):
++                continue
++
++            # ── cd — resolve the target dir ──
++            _cd_match = re.match(r"^cd\s+(.*)", stripped)
++            if _cd_match:
++                _cd_target = _cd_match.group(1).strip()
++                # Strip shell redirects/quoting from cd target
++                _cd_target = _cd_target.split("2>")[0].split("&>")[0].strip().strip("'\"")
++                # Strip command separators: &&, ||, ;, |, &  (the & after 2>&1 was
++                # already handled by the 2>/&> split above; bare & at the end is a
++                # background operator)
++                _cd_target = re.split(r"\s*[;&|]{1,2}\s*", _cd_target)[0].strip()
++                try:
++                    _resolved = str(Path(ws).resolve() / Path(_cd_target).resolve())
++                except Exception:
++                    pass
++                if _cd_target == ".." or _cd_target.startswith("../"):
++                    return _block_msg("⛔ 非 owner 用户不能使用 cd .. 离开工作目录。")
++                if _cd_target.startswith("/"):
++                    _resolved_cd = str(Path(_cd_target).resolve())
++                    if not _resolved_cd.startswith(_ws_safe):
++                        return _block_msg("⛔ 非 owner 用户不能离开自己的工作目录。")
++                continue  # cd processed, skip token scan for this line
++
++            # ── Scan all tokens for path-like patterns ──
++            for token in stripped.split():
++                _raw = token.rstrip(",;|&><").strip("'\"")
++                if not _raw:
++                    continue
++                # Skip non-path tokens (flags, operators, variables)
++                if _raw.startswith("-") or _raw in {"|", "&&", "||", ";", ">", "<", ">>", "2>", "&>"}:
++                    continue
++                if _raw.startswith("$") or "=" in _raw:
++                    continue
++                if _raw.startswith("~/"):
++                    _expanded = str(Path(_raw).expanduser().resolve())
++                    if not _expanded.startswith(_ws_safe):
++                        return _block_msg("⛔ 非 owner 用户不能访问工作目录外的路径。")
++                    continue
++                if _raw.startswith("/"):
++                    _safe_system = {"/usr/bin", "/bin", "/usr/sbin", "/sbin", "/tmp",
++                                    "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"}
++                    if any(_raw.startswith(p) for p in _safe_system):
++                        continue
++                    try:
++                        _resolved = str(Path(_raw).resolve())
++                        # Allow temp files created in /tmp by the system
++                        if _resolved.startswith("/tmp"):
++                            continue
++                        if not _resolved.startswith(_ws_safe):
++                            return _block_msg("⛔ 非 owner 用户不能访问工作目录外的路径。")
++                    except Exception:
++                        pass
++                    continue
++                # Relative paths — check for parent-dir traversal
++                if _raw.startswith("../") or _raw == "..":
++                    try:
++                        _resolved_relative = str((Path(ws) / _raw).resolve())
++                        if not _resolved_relative.startswith(_ws_safe):
++                            return _block_msg("⛔ 非 owner 用户不能访问工作目录外的路径。")
++                    except Exception:
++                        pass
++
+     return terminal_tool(
+         command=args.get("command"),
+         background=args.get("background", False),

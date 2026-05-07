@@ -1,0 +1,275 @@
+diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
+index 3b0375ff0..153fcdef6 100644
+--- a/gateway/platforms/api_server.py
++++ b/gateway/platforms/api_server.py
+@@ -768,14 +768,26 @@ class APIServerAdapter(BasePlatformAdapter):
+     # ------------------------------------------------------------------
+ 
+     def _ensure_session_db(self):
+-        """Lazily initialise and return the shared SessionDB instance.
++        """Lazily initialise and return the owner's per-agent SessionDB.
+ 
+-        Sessions are persisted to ``state.db`` so that ``hermes sessions list``
+-        shows API-server conversations alongside CLI and gateway ones.
++        Uses AgentRegistry to resolve the owner profile (api_server always
++        maps to the owner identity), then opens its per-agent state.db.
++        Falls back to the shared SessionDB if AgentRegistry is unavailable.
+         """
+         if self._session_db is None:
+             try:
+                 from hermes_state import SessionDB
++                # Try per-agent session DB for the owner
++                try:
++                    from tools.agent_registry import get_agent_registry
++                    reg = get_agent_registry()
++                    profile = reg.get_or_create("api_server", None)
++                    if profile:
++                        self._session_db = SessionDB(profile.session_db_path)
++                        return self._session_db
++                except Exception:
++                    pass
++                # Fall back to shared DB
+                 self._session_db = SessionDB()
+             except Exception as e:
+                 logger.debug("SessionDB unavailable for API server: %s", e)
+diff --git a/hermes_cli/web_server.py b/hermes_cli/web_server.py
+index 46786455c..0e744908e 100644
+--- a/hermes_cli/web_server.py
++++ b/hermes_cli/web_server.py
+@@ -71,7 +71,7 @@ app = FastAPI(title="Hermes Agent", version=__version__)
+ # Generated fresh on every server start — dies when the process exits.
+ # Injected into the SPA HTML so only the legitimate web UI can use it.
+ # ---------------------------------------------------------------------------
+-_SESSION_TOKEN = secrets.token_urlsafe(32)
++_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_TOKEN") or secrets.token_urlsafe(32)
+ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+ 
+ # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
+@@ -716,17 +716,8 @@ async def restart_gateway():
+ 
+ @app.post("/api/hermes/update")
+ async def update_hermes():
+-    """Kick off ``hermes update`` in the background."""
+-    try:
+-        proc = _spawn_hermes_action(["update"], "hermes-update")
+-    except Exception as exc:
+-        _log.exception("Failed to spawn hermes update")
+-        raise HTTPException(status_code=500, detail=f"Failed to start update: {exc}")
+-    return {
+-        "ok": True,
+-        "pid": proc.pid,
+-        "name": "hermes-update",
+-    }
++    """Update endpoint disabled — use CLI: hermes update."""
++    raise HTTPException(status_code=410, detail="Update from dashboard disabled. Use CLI: hermes update")
+ 
+ 
+ @app.get("/api/actions/{name}/status")
+@@ -758,11 +749,84 @@ async def get_action_status(name: str, lines: int = 200):
+     }
+ 
+ 
++def _resolve_agent_db(agent_name: str = None):
++    """Resolve SessionDB for a named agent, or shared DB if not specified.
++    
++    Uses AgentRegistry to find the agent's per-agent state.db path.
++    Falls back to the shared SessionDB if AgentRegistry is unavailable
++    or the named agent is not found.
++    """
++    from hermes_state import SessionDB
++    if not agent_name:
++        return SessionDB()
++    try:
++        from tools.agent_registry import get_agent_registry
++        reg = get_agent_registry()
++        profile = reg.get(agent_name)
++        if profile and profile.session_db_path.exists():
++            return SessionDB(db_path=str(profile.session_db_path))
++    except Exception:
++        pass
++    return SessionDB()
++
++
++@app.get("/api/agents")
++async def list_agents():
++    """List all known agent profiles (from identities.yaml + guests)."""
++    try:
++        from tools.agent_registry import get_agent_registry
++        reg = get_agent_registry()
++        profiles = reg.list_profiles()
++        return {"agents": [
++            {"name": name, "role": p.role,
++             "default_model": p.default_model, "default_provider": p.default_provider}
++            for name, p in sorted(profiles.items())
++        ]}
++    except Exception:
++        _log.exception("GET /api/agents failed")
++        return {"agents": []}
++
++
++@app.get("/api/memory")
++async def get_memory(agent: str = None):
++    """Read MEMORY.md and USER.md for a given agent (or shared if not specified)."""
++    try:
++        from pathlib import Path
++        mem_dir = None
++        if agent:
++            try:
++                from tools.agent_registry import get_agent_registry
++                reg = get_agent_registry()
++                profile = reg.get(agent)
++                if profile:
++                    # Per-agent memory is under ~/.hermes/memories/<name>/
++                    mem_dir = Path(profile.agent_dir).parent.parent / "memories" / agent
++            except Exception:
++                pass
++        if not mem_dir or not (mem_dir / "MEMORY.md").exists():
++            # Fall back to shared memory or agent_dir directly
++            hermes_home = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
++            mem_dir = hermes_home / "memories" / (agent or "")
++            if not (mem_dir / "MEMORY.md").exists():
++                mem_dir = hermes_home
++
++        def read_file(path):
++            if path.exists():
++                return path.read_text(encoding="utf-8")
++            return ""
++
++        memory_md = read_file(mem_dir / "MEMORY.md")
++        user_md = read_file(mem_dir / "USER.md")
++        return {"memory": memory_md, "user": user_md, "agent": agent}
++    except Exception:
++        _log.exception("GET /api/memory failed")
++        raise HTTPException(status_code=500, detail="Failed to read memory")
++
++
+ @app.get("/api/sessions")
+-async def get_sessions(limit: int = 20, offset: int = 0):
++async def get_sessions(limit: int = 20, offset: int = 0, agent: str = None):
+     try:
+-        from hermes_state import SessionDB
+-        db = SessionDB()
++        db = _resolve_agent_db(agent)
+         try:
+             sessions = db.list_sessions_rich(limit=limit, offset=offset)
+             total = db.session_count()
+@@ -781,13 +845,12 @@ async def get_sessions(limit: int = 20, offset: int = 0):
+ 
+ 
+ @app.get("/api/sessions/search")
+-async def search_sessions(q: str = "", limit: int = 20):
++async def search_sessions(q: str = "", limit: int = 20, agent: str = None):
+     """Full-text search across session message content using FTS5."""
+     if not q or not q.strip():
+         return {"results": []}
+     try:
+-        from hermes_state import SessionDB
+-        db = SessionDB()
++        db = _resolve_agent_db(agent)
+         try:
+             # Auto-add prefix wildcards so partial words match
+             # e.g. "nimb" → "nimb*" matches "nimby"
+@@ -2251,9 +2314,9 @@ def _session_latest_descendant(session_id: str):
+         db.close()
+ 
+ @app.get("/api/sessions/{session_id}")
+-async def get_session_detail(session_id: str):
++async def get_session_detail(session_id: str, agent: str = None):
+     from hermes_state import SessionDB
+-    db = SessionDB()
++    db = _resolve_agent_db(agent)
+     try:
+         sid = db.resolve_session_id(session_id)
+         session = db.get_session(sid) if sid else None
+@@ -2278,9 +2341,8 @@ async def get_session_latest_descendant(session_id: str):
+     }
+ 
+ @app.get("/api/sessions/{session_id}/messages")
+-async def get_session_messages(session_id: str):
+-    from hermes_state import SessionDB
+-    db = SessionDB()
++async def get_session_messages(session_id: str, agent: str = None):
++    db = _resolve_agent_db(agent)
+     try:
+         sid = db.resolve_session_id(session_id)
+         if not sid:
+@@ -2292,9 +2354,8 @@ async def get_session_messages(session_id: str):
+ 
+ 
+ @app.delete("/api/sessions/{session_id}")
+-async def delete_session_endpoint(session_id: str):
+-    from hermes_state import SessionDB
+-    db = SessionDB()
++async def delete_session_endpoint(session_id: str, agent: str = None):
++    db = _resolve_agent_db(agent)
+     try:
+         if not db.delete_session(session_id):
+             raise HTTPException(status_code=404, detail="Session not found")
+@@ -2544,11 +2605,47 @@ def _profile_setup_command(name: str) -> str:
+     return "hermes setup" if name == "default" else f"{name} setup"
+ 
+ 
++def _merge_identity_profiles(profiles: list) -> list:
++    """Merge AgentRegistry profiles (from identities.yaml) into the profile list.
++
++    AgentRegistry creates real AgentProfile objects with isolated session DBs,
++    memory directories, workspaces, and role-based toolsets. These are dropped
++    alongside the directory-based profiles so the multi-agent picker sees all
++    running agents.
++    """
++    try:
++        from tools.agent_registry import get_agent_registry
++        reg = get_agent_registry()
++        agent_profiles = reg.list_profiles()
++    except Exception:
++        return profiles
++
++    existing = {p.get("name", "") for p in profiles}
++    for name, ap in agent_profiles.items():
++        if name in existing:
++            continue
++        profiles.append({
++            "name": ap.key,
++            "user_name": ap.user_name,
++            "agent_name": ap.agent_name,
++            "role": ap.role,
++            "path": str(ap.agent_dir),
++            "is_default": bool(ap.role == "owner"),
++            "model": ap.default_model,
++            "provider": ap.default_provider,
++            "has_env": ap.agent_dir.joinpath("config.yaml").exists(),
++            "skill_count": 0,
++        })
++    return profiles
++
+ @app.get("/api/profiles")
+ async def list_profiles_endpoint():
+     from hermes_cli import profiles as profiles_mod
+     try:
+-        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
++        result = [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
++        # Merge identities from identities.yaml as virtual profiles
++        result = _merge_identity_profiles(result)
++        return {"profiles": result}
+     except Exception:
+         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
+         return {"profiles": _fallback_profile_dicts(profiles_mod)}
+@@ -3367,7 +3464,8 @@ def mount_spa(application: FastAPI):
+         token_script = (
+             f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+-            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
++            f'window.__HERMES_BASE_PATH__="{prefix}";'
++            f'localStorage.setItem("claude-onboarding-complete","true");</script>'
+         )
+         if prefix:
+             # Rewrite absolute asset URLs baked into the Vite build so the
+@@ -3437,7 +3535,7 @@ _BUILTIN_DASHBOARD_THEMES = [
+     {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
+     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
+     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
+-    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
++    {"name": "rose",      "label": "Light",          "description": "Bright white — clean and airy like fresh paper"},
+ ]
+ 
+ 

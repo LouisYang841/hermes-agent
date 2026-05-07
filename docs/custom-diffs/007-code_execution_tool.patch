@@ -1,0 +1,44 @@
+diff --git a/tools/code_execution_tool.py b/tools/code_execution_tool.py
+index ffcf726fc..77bb8bdfc 100644
+--- a/tools/code_execution_tool.py
++++ b/tools/code_execution_tool.py
+@@ -960,6 +960,11 @@ def execute_code(
+     if not code or not code.strip():
+         return tool_error("No code provided.")
+ 
++    # ── OS-level sandbox: all execute_code runs as hermes-sandbox user ──
++    # The sandbox user has no access to credentials/ or system files.
++    # This is more robust than any Python-level identity check.
++    # ────────────────────────────────────────────────────────────────────
++
+     # Dispatch: remote backends use file-based RPC, local uses UDS
+     from tools.terminal_tool import _get_env_config
+     env_type = _get_env_config()["env_type"]
+@@ -985,6 +990,11 @@ def execute_code(
+ 
+     # --- Set up temp directory with hermes_tools.py and script.py ---
+     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
++    # Make temp dir accessible by hermes-sandbox subprocess (sudo -u)
++    try:
++        os.chmod(tmpdir, 0o755)
++    except Exception:
++        pass
+     # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
+     # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
+     # On Linux, tempfile.gettempdir() already returns /tmp.
+@@ -1092,13 +1102,13 @@ def execute_code(
+         _script_path = os.path.join(tmpdir, "script.py")
+ 
+         proc = subprocess.Popen(
+-            [_child_python, _script_path],
++            ['sudo', '-u', 'hermes-sandbox', _child_python, _script_path],
+             cwd=_child_cwd,
+             env=child_env,
+             stdout=subprocess.PIPE,
+             stderr=subprocess.PIPE,
+             stdin=subprocess.DEVNULL,
+-            preexec_fn=None if _IS_WINDOWS else os.setsid,
++            preexec_fn=os.setsid,
+         )
+ 
+         # --- Poll loop: watch for exit, timeout, and interrupt ---

@@ -1,0 +1,16 @@
+diff --git a/hermes_state.py b/hermes_state.py
+index 56715f30a..d09582ebb 100644
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -1933,11 +1933,6 @@ class SessionDB:
+         When user_id is provided, only returns sessions belonging to
+         that user.  Used for per-identity session isolation.
+         """
+-
+-        Returns rows enriched with a computed ``last_active`` column (latest
+-        message timestamp for the session, falling back to ``started_at``),
+-        ordered by most-recently-used first.
+-        """
+         select_with_last_active = (
+             "SELECT s.*, COALESCE(m.last_active, s.started_at) AS last_active "
+             "FROM sessions s "

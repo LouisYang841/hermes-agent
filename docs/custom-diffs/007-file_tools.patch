@@ -1,0 +1,116 @@
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+index 106bd295b..19777a7ee 100644
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -21,6 +21,60 @@ from agent.redact import redact_sensitive_text
+ logger = logging.getLogger(__name__)
+ 
+ 
++# ── Workspace enforcement for non-owner users ─────────────────────────────
++def _get_identity_info() -> dict:
++    """Get identity from per-thread threading.local() context.
++
++    Each thread has its own identity via threading.local().
++    Fallback to owner when unset (fail-open: system prompt is the
++    primary gate; code-level identity is defense-in-depth).
++    """
++    try:
++        from tools._identity_context import get_identity
++        ident = get_identity()
++        if ident:
++            return ident
++    except Exception:
++        pass
++    # Fallback: identity stack empty → default to owner
++    # (fail-open: the system prompt already gates non-owner users;
++    #  code-level identity is defense-in-depth, not the primary gate)
++    return {"name": "unknown", "role": "owner"}
++
++
++def _workspace_for(identity_name: str) -> Path:
++    """Return the absolute workspace path for a given identity name."""
++    _home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
++    return Path(_home) / "workspaces" / identity_name
++
++
++def _check_file_access(path: str) -> str | None:
++    """Return None if access is allowed, or an error string if denied.
++    
++    Owner users have unrestricted access. Non-owner users may only
++    access files within their own workspace directory.
++    """
++    identity = _get_identity_info()
++    role = identity.get("role", "")
++    # If identity file is missing/invalid → allow access (don't lock out)
++    if not role or role == "owner":
++        return None  # Owner or unknown: unrestricted
++
++    name = identity.get("name", "unknown")
++    ws = _workspace_for(name)
++    try:
++        abs_path = Path(path).resolve()
++    except Exception:
++        return f"⛔ 路径无效：{path}"
++
++    if not str(abs_path).startswith(str(ws.resolve())):
++        return (
++            f"⛔ 你没有权限访问该路径。"
++            f"非 owner 用户只能在自己的工作目录内操作文件。"
++        )
++    return None
++
++
+ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+ 
+ # ---------------------------------------------------------------------------
+@@ -1092,12 +1146,17 @@ SEARCH_FILES_SCHEMA = {
+ 
+ def _handle_read_file(args, **kw):
+     tid = kw.get("task_id") or "default"
+-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
++    path = args.get("path", "")
++    err = _check_file_access(path) if path else None
++    if err:
++        return tool_error(err)
++    return read_file_tool(path=path, offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+ 
+ 
+ def _handle_write_file(args, **kw):
+     tid = kw.get("task_id") or "default"
+-    if not args.get("path") or not isinstance(args.get("path"), str):
++    path = args.get("path", "")
++    if not path or not isinstance(path, str):
+         return tool_error(
+             "write_file: missing required field 'path'. Re-emit the tool call with "
+             "both 'path' and 'content' set."
+@@ -1115,11 +1174,18 @@ def _handle_write_file(args, **kw):
+             f"write_file: 'content' must be a string, got "
+             f"{type(args['content']).__name__}."
+         )
+-    return write_file_tool(path=args["path"], content=args["content"], task_id=tid)
++    err = _check_file_access(path)
++    if err:
++        return tool_error(err)
++    return write_file_tool(path=path, content=args["content"], task_id=tid)
+ 
+ 
+ def _handle_patch(args, **kw):
+     tid = kw.get("task_id") or "default"
++    path = args.get("path", "")
++    err = _check_file_access(path) if path else None
++    if err:
++        return tool_error(err)
+     return patch_tool(
+         mode=args.get("mode", "replace"), path=args.get("path"),
+         old_string=args.get("old_string"), new_string=args.get("new_string"),
+@@ -1131,6 +1197,10 @@ def _handle_search_files(args, **kw):
+     target_map = {"grep": "content", "find": "files"}
+     raw_target = args.get("target", "content")
+     target = target_map.get(raw_target, raw_target)
++    search_path = args.get("path", ".")
++    err = _check_file_access(search_path) if search_path else None
++    if err:
++        return tool_error(err)
+     return search_tool(
+         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
+         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),

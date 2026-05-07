@@ -1,0 +1,318 @@
+diff --git a/gateway/platforms/feishu.py b/gateway/platforms/feishu.py
+index ac920bab6..a64822740 100644
+--- a/gateway/platforms/feishu.py
++++ b/gateway/platforms/feishu.py
+@@ -83,45 +83,77 @@ try:
+ except ImportError:
+     websockets = None  # type: ignore[assignment]
+ 
+-try:
+-    import lark_oapi as lark
+-    from lark_oapi.api.application.v6 import GetApplicationRequest
+-    from lark_oapi.api.im.v1 import (
+-        CreateFileRequest,
+-        CreateFileRequestBody,
+-        CreateImageRequest,
+-        CreateImageRequestBody,
+-        CreateMessageRequest,
+-        CreateMessageRequestBody,
+-        GetChatRequest,
+-        GetMessageRequest,
+-        GetMessageResourceRequest,
+-        P2ImMessageMessageReadV1,
+-        ReplyMessageRequest,
+-        ReplyMessageRequestBody,
+-        UpdateMessageRequest,
+-        UpdateMessageRequestBody,
+-    )
+-    from lark_oapi.core import AccessTokenType, HttpMethod
+-    from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
+-    from lark_oapi.core.model import BaseRequest
+-    from lark_oapi.event.callback.model.p2_card_action_trigger import (
+-        CallBackCard,
+-        P2CardActionTriggerResponse,
+-    )
+-    from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
+-    from lark_oapi.ws import Client as FeishuWSClient
++# ── Lazy lark_oapi imports ──────────────────────────────────────────
++# lark_oapi is ~5s to import due to its massive API surface.  We defer
++# the import until the FeishuAdapter is actually initialized so gateway
++# startup stays fast even when feishu is configured.
++_lark_cache = {"available": False, "lark": None}
++
++def _get_lark():
++    """Lazy-import lark_oapi and its submodules.  Returns (lark_module, available_flag)."""
++    if "lark" in _lark_cache:
++        return _lark_cache["lark"], _lark_cache["available"]
++    try:
++        import lark_oapi as lark
++        from lark_oapi.api.application.v6 import GetApplicationRequest
++        from lark_oapi.api.im.v1 import (
++            CreateFileRequest,
++            CreateFileRequestBody,
++            CreateImageRequest,
++            CreateImageRequestBody,
++            CreateMessageRequest,
++            CreateMessageRequestBody,
++            GetChatRequest,
++            GetMessageRequest,
++            GetMessageResourceRequest,
++            P2ImMessageMessageReadV1,
++            ReplyMessageRequest,
++            ReplyMessageRequestBody,
++            UpdateMessageRequest,
++            UpdateMessageRequestBody,
++        )
++        from lark_oapi.core import AccessTokenType, HttpMethod
++        from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
++        from lark_oapi.core.model import BaseRequest
++        from lark_oapi.event.callback.model.p2_card_action_trigger import (
++            CallBackCard,
++            P2CardActionTriggerResponse,
++        )
++        from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
++        from lark_oapi.ws import Client as FeishuWSClient
++
++        _lark_cache["lark"] = {
++            "module": lark,
++            "GetApplicationRequest": GetApplicationRequest,
++            "CreateFileRequest": CreateFileRequest,
++            "CreateFileRequestBody": CreateFileRequestBody,
++            "CreateImageRequest": CreateImageRequest,
++            "CreateImageRequestBody": CreateImageRequestBody,
++            "CreateMessageRequest": CreateMessageRequest,
++            "CreateMessageRequestBody": CreateMessageRequestBody,
++            "GetChatRequest": GetChatRequest,
++            "GetMessageRequest": GetMessageRequest,
++            "GetMessageResourceRequest": GetMessageResourceRequest,
++            "P2ImMessageMessageReadV1": P2ImMessageMessageReadV1,
++            "ReplyMessageRequest": ReplyMessageRequest,
++            "ReplyMessageRequestBody": ReplyMessageRequestBody,
++            "UpdateMessageRequest": UpdateMessageRequest,
++            "UpdateMessageRequestBody": UpdateMessageRequestBody,
++            "AccessTokenType": AccessTokenType,
++            "HttpMethod": HttpMethod,
++            "FEISHU_DOMAIN": FEISHU_DOMAIN,
++            "LARK_DOMAIN": LARK_DOMAIN,
++            "BaseRequest": BaseRequest,
++            "CallBackCard": CallBackCard,
++            "P2CardActionTriggerResponse": P2CardActionTriggerResponse,
++            "EventDispatcherHandler": EventDispatcherHandler,
++            "FeishuWSClient": FeishuWSClient,
++        }
++        _lark_cache["available"] = True
++    except ImportError:
++        _lark_cache["available"] = False
+ 
+-    FEISHU_AVAILABLE = True
+-except ImportError:
+-    FEISHU_AVAILABLE = False
+-    lark = None  # type: ignore[assignment]
+-    CallBackCard = None  # type: ignore[assignment]
+-    P2CardActionTriggerResponse = None  # type: ignore[assignment]
+-    EventDispatcherHandler = None  # type: ignore[assignment]
+-    FeishuWSClient = None  # type: ignore[assignment]
+-    FEISHU_DOMAIN = None  # type: ignore[assignment]
+-    LARK_DOMAIN = None  # type: ignore[assignment]
++    return _lark_cache["lark"], _lark_cache["available"]
+ 
+ FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
+ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
+@@ -1341,7 +1373,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
+ 
+ def check_feishu_requirements() -> bool:
+     """Check if Feishu/Lark dependencies are available."""
+-    return FEISHU_AVAILABLE
++    _, avail = _get_lark()
++    return avail
+ 
+ 
+ class FeishuAdapter(BasePlatformAdapter):
+@@ -1365,6 +1398,10 @@ class FeishuAdapter(BasePlatformAdapter):
+         self._client: Optional[Any] = None
+         self._ws_client: Optional[Any] = None
+         self._ws_future: Optional[asyncio.Future] = None
++
++        # Lazy lark_oapi import — avoid 5s startup penalty
++        self._lark: dict = {}
++
+         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
+         self._loop: Optional[asyncio.AbstractEventLoop] = None
+         self._webhook_runner: Optional[Any] = None
+@@ -1376,7 +1413,7 @@ class FeishuAdapter(BasePlatformAdapter):
+         self._dedup_lock = threading.Lock()
+         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
+         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
+-        self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
++        self._webhook_anomaly_counts: Dict[str, tuple[str, float]] = {}  # ip → (count, last_status, first_seen)
+         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
+         # Inbound events that arrived before the adapter loop was ready
+         # (e.g. during startup/restart or network-flap reconnect). A single
+@@ -1406,6 +1443,14 @@ class FeishuAdapter(BasePlatformAdapter):
+         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+         self._load_seen_message_ids()
+ 
++    @property
++    def _lark_mod(self) -> dict:
++        """Lazy lark_oapi module dict; triggers import on first access."""
++        if not self._lark:
++            mod, avail = _get_lark()
++            self._lark = mod if avail else {}
++        return self._lark
++
+     @staticmethod
+     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
+         # Parse per-group rules from config
+@@ -1538,10 +1583,12 @@ class FeishuAdapter(BasePlatformAdapter):
+         self._require_mention = settings.require_mention
+ 
+     def _build_event_handler(self) -> Any:
+-        if EventDispatcherHandler is None:
++        lark_mod = self._lark_mod
++        edh = lark_mod.get("EventDispatcherHandler")
++        if edh is None:
+             return None
+         return (
+-            EventDispatcherHandler.builder(
++            edh.builder(
+                 self._encrypt_key,
+                 self._verification_token,
+             )
+@@ -1567,7 +1614,7 @@ class FeishuAdapter(BasePlatformAdapter):
+ 
+     async def connect(self) -> bool:
+         """Connect to Feishu/Lark."""
+-        if not FEISHU_AVAILABLE:
++        if not self._lark_mod:
+             logger.error("[Feishu] lark-oapi not installed")
+             return False
+         if not self._app_id or not self._app_secret:
+@@ -2363,7 +2410,8 @@ class FeishuAdapter(BasePlatformAdapter):
+         loop = self._loop
+         if not self._loop_accepts_callbacks(loop):
+             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
+-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
++            catr = self._lark_mod.get("P2CardActionTriggerResponse")
++            return catr() if catr else None
+ 
+         event = getattr(data, "event", None)
+         action = getattr(event, "action", None)
+@@ -2374,9 +2422,10 @@ class FeishuAdapter(BasePlatformAdapter):
+             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+ 
+         self._submit_on_loop(loop, self._handle_card_action_event(data))
+-        if P2CardActionTriggerResponse is None:
++        catr = self._lark_mod.get("P2CardActionTriggerResponse")
++        if catr is None:
+             return None
+-        return P2CardActionTriggerResponse()
++        return catr()
+ 
+     @staticmethod
+     def _loop_accepts_callbacks(loop: Any) -> bool:
+@@ -2393,7 +2442,8 @@ class FeishuAdapter(BasePlatformAdapter):
+         approval_id = action_value.get("approval_id")
+         if approval_id is None:
+             logger.debug("[Feishu] Card action missing approval_id, ignoring")
+-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
++            catr = self._lark_mod.get("P2CardActionTriggerResponse")
++            return catr() if catr else None
+         choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
+ 
+         operator = getattr(event, "operator", None)
+@@ -2402,11 +2452,13 @@ class FeishuAdapter(BasePlatformAdapter):
+ 
+         self._submit_on_loop(loop, self._resolve_approval(approval_id, choice, user_name))
+ 
+-        if P2CardActionTriggerResponse is None:
++        catr = self._lark_mod.get("P2CardActionTriggerResponse")
++        if catr is None:
+             return None
+-        response = P2CardActionTriggerResponse()
+-        if CallBackCard is not None:
+-            card = CallBackCard()
++        response = catr()
++        cbc = self._lark_mod.get("CallBackCard")
++        if cbc is not None:
++            card = cbc()
+             card.type = "raw"
+             card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+             response.card = card
+@@ -4155,7 +4207,8 @@ class FeishuAdapter(BasePlatformAdapter):
+     async def _connect_websocket(self) -> None:
+         if not FEISHU_WEBSOCKET_AVAILABLE:
+             raise RuntimeError("websockets not installed; websocket mode unavailable")
+-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
++        lm = self._lark_mod
++        domain = lm.get("FEISHU_DOMAIN") if self._domain_name != "lark" else lm.get("LARK_DOMAIN")
+         self._client = self._build_lark_client(domain)
+         self._event_handler = self._build_event_handler()
+         if self._event_handler is None:
+@@ -4164,10 +4217,11 @@ class FeishuAdapter(BasePlatformAdapter):
+         if loop is None or loop.is_closed():
+             raise RuntimeError("adapter loop is not ready")
+         await self._hydrate_bot_identity()
+-        self._ws_client = FeishuWSClient(
++        ws_client_cls = lm.get("FeishuWSClient")
++        self._ws_client = ws_client_cls(
+             app_id=self._app_id,
+             app_secret=self._app_secret,
+-            log_level=lark.LogLevel.INFO,
++            log_level=lm.get("module").LogLevel.INFO,
+             event_handler=self._event_handler,
+             domain=domain,
+         )
+@@ -4181,7 +4235,8 @@ class FeishuAdapter(BasePlatformAdapter):
+     async def _connect_webhook(self) -> None:
+         if not FEISHU_WEBHOOK_AVAILABLE:
+             raise RuntimeError("aiohttp not installed; webhook mode unavailable")
+-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
++        lm = self._lark_mod
++        domain = lm.get("FEISHU_DOMAIN") if self._domain_name != "lark" else lm.get("LARK_DOMAIN")
+         self._client = self._build_lark_client(domain)
+         self._event_handler = self._build_event_handler()
+         if self._event_handler is None:
+@@ -4195,12 +4250,13 @@ class FeishuAdapter(BasePlatformAdapter):
+         await self._webhook_site.start()
+ 
+     def _build_lark_client(self, domain: Any) -> Any:
++        lm = self._lark_mod
+         return (
+-            lark.Client.builder()
++            lm.get("module").Client.builder()
+             .app_id(self._app_id)
+             .app_secret(self._app_secret)
+             .domain(domain)
+-            .log_level(lark.LogLevel.WARNING)
++            .log_level(lm.get("module").LogLevel.WARNING)
+             .build()
+         )
+ 
+@@ -4649,20 +4705,23 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
+     Note: ``bot_open_id`` here is the bot's app-scoped open_id — the same ID
+     that Feishu puts in @mention payloads.  It is NOT the app_id.
+     """
+-    if FEISHU_AVAILABLE:
++    if _get_lark()[1]:
+         return _probe_bot_sdk(app_id, app_secret, domain)
+     return _probe_bot_http(app_id, app_secret, domain)
+ 
+ 
+ def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
+     """Build a lark Client for the given credentials and domain."""
+-    sdk_domain = LARK_DOMAIN if domain == "lark" else FEISHU_DOMAIN
++    lark_mod, avail = _get_lark()
++    if not avail:
++        return None
++    sdk_domain = lark_mod.get("LARK_DOMAIN") if domain == "lark" else lark_mod.get("FEISHU_DOMAIN")
+     return (
+-        lark.Client.builder()
++        lark_mod.get("module").Client.builder()
+         .app_id(app_id)
+         .app_secret(app_secret)
+         .domain(sdk_domain)
+-        .log_level(lark.LogLevel.WARNING)
++        .log_level(lark_mod.get("module").LogLevel.WARNING)
+         .build()
+     )
+ 

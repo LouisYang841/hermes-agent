@@ -1,0 +1,376 @@
+diff --git a/scripts/whatsapp-bridge/pair_background.mjs b/scripts/whatsapp-bridge/pair_background.mjs
+new file mode 100644
+index 000000000..66cf10d88
+--- /dev/null
++++ b/scripts/whatsapp-bridge/pair_background.mjs
+@@ -0,0 +1,43 @@
++import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
++import { writeFileSync, mkdirSync } from 'fs';
++import { Boom } from '@hapi/boom';
++import pino from 'pino';
++
++const SESSION_DIR = '/home/ubuntu/.hermes/platforms/whatsapp/session';
++mkdirSync(SESSION_DIR, { recursive: true });
++
++const phoneNumber = process.argv[2];
++if (!phoneNumber) { process.exit(1); }
++
++const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
++const { version } = await fetchLatestBaileysVersion();
++
++const sock = makeWASocket({
++  version, auth: state, printQRInTerminal: false,
++  logger: pino({ level: 'silent' }),
++  browser: ['Hermes Agent', 'Chrome', '0.12.0'],
++  syncFullHistory: false, markOnlineOnConnect: false, emitOwnEvents: true,
++});
++
++sock.ev.on('creds.update', saveCreds);
++
++sock.ev.on('connection.update', async (update) => {
++  const { connection, lastDisconnect } = update;
++  if (connection === 'open') {
++    writeFileSync('/tmp/whatsapp_status.txt', 'CONNECTED');
++    process.exit(0);
++  }
++  if (connection === 'close') {
++    const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
++    if (reason === DisconnectReason.loggedOut) {
++      writeFileSync('/tmp/whatsapp_status.txt', 'LOGGED_OUT');
++      process.exit(1);
++    }
++  }
++});
++
++setTimeout(async () => {
++  const code = await sock.requestPairingCode(phoneNumber);
++  writeFileSync('/tmp/whatsapp_code.txt', code);
++  writeFileSync('/tmp/whatsapp_status.txt', 'AWAITING_SCAN');
++}, 2000);
+diff --git a/scripts/whatsapp-bridge/qr_pair.mjs b/scripts/whatsapp-bridge/qr_pair.mjs
+new file mode 100644
+index 000000000..384e2b52d
+--- /dev/null
++++ b/scripts/whatsapp-bridge/qr_pair.mjs
+@@ -0,0 +1,58 @@
++import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
++import qrcode from 'qrcode';
++import { writeFileSync, readFileSync, mkdirSync } from 'fs';
++import { Boom } from '@hapi/boom';
++import pino from 'pino';
++
++const SESSION_DIR = '/home/ubuntu/.hermes/platforms/whatsapp/session';
++mkdirSync(SESSION_DIR, { recursive: true });
++
++const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
++const { version } = await fetchLatestBaileysVersion();
++
++const sock = makeWASocket({
++  version,
++  auth: state,
++  printQRInTerminal: false,
++  logger: pino({ level: 'silent' }),
++  browser: ['Hermes Agent', 'Chrome', '0.12.0'],
++  syncFullHistory: false,
++  markOnlineOnConnect: false,
++  emitOwnEvents: true,
++});
++
++let qrRendered = false;
++
++sock.ev.on('connection.update', async (update) => {
++  const { connection, lastDisconnect, qr } = update;
++  if (qr && !qrRendered) {
++    qrRendered = true;
++    writeFileSync('/tmp/whatsapp_qr_string.txt', qr);
++    const text = await qrcode.toString(qr, { type: 'utf8', small: false });
++    console.log('\n' + '='.repeat(70));
++    console.log('SCAN THIS QR CODE WITH YOUR PHONE:');
++    console.log('Open WhatsApp -> Settings -> Linked Devices -> Link a Device');
++    console.log('='.repeat(70) + '\n');
++    console.log(text);
++    console.log('\n' + '='.repeat(70));
++    console.log('Waiting for scan... (timeout: 3 minutes)');
++    console.log('='.repeat(70) + '\n');
++  }
++  if (connection === 'close') {
++    const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
++    if (reason === DisconnectReason.loggedOut) {
++      console.log('Logged out. Delete session to re-pair.');
++      process.exit(1);
++    }
++    if (!qrRendered) {
++      // Allow another QR attempt on reconnect
++      qrRendered = false;
++    }
++  }
++  if (connection === 'open') {
++    console.log('WhatsApp connected successfully!');
++    process.exit(0);
++  }
++});
++
++sock.ev.on('creds.update', saveCreds);
+diff --git a/scripts/whatsapp-bridge/qr_pair_v2.mjs b/scripts/whatsapp-bridge/qr_pair_v2.mjs
+new file mode 100644
+index 000000000..689c86147
+--- /dev/null
++++ b/scripts/whatsapp-bridge/qr_pair_v2.mjs
+@@ -0,0 +1,49 @@
++import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
++import qrcode from 'qrcode';
++import { writeFileSync, mkdirSync } from 'fs';
++import { Boom } from '@hapi/boom';
++import pino from 'pino';
++
++const SESSION_DIR = '/home/ubuntu/.hermes/platforms/whatsapp/session';
++mkdirSync(SESSION_DIR, { recursive: true });
++
++const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
++const { version } = await fetchLatestBaileysVersion();
++
++const sock = makeWASocket({
++  version,
++  auth: state,
++  printQRInTerminal: false,
++  logger: pino({ level: 'silent' }),
++  browser: ['Chrome', 'Linux', '121.0.6167.139'],  // Real Chrome UA
++  syncFullHistory: false,
++  markOnlineOnConnect: false,
++  emitOwnEvents: true,
++});
++
++sock.ev.on('creds.update', saveCreds);
++let qrDisplayed = false;
++
++sock.ev.on('connection.update', async (update) => {
++  const { connection, lastDisconnect, qr } = update;
++  if (qr && !qrDisplayed) {
++    qrDisplayed = true;
++    writeFileSync('/tmp/whatsapp_qr_string.txt', qr);
++    const text = await qrcode.toString(qr, { type: 'utf8', small: false });
++    process.stdout.write('\nSCAN THIS QR WITH WHATSAPP:\n');
++    process.stdout.write(text + '\n');
++    process.stdout.write('Waiting for scan... (timeout: 3 min)\n');
++  }
++  if (connection === 'close') {
++    const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
++    if (reason === DisconnectReason.loggedOut) {
++      process.stdout.write('LOGGED_OUT\n');
++      process.exit(1);
++    }
++    qrDisplayed = false;  // Allow retry on reconnect
++  }
++  if (connection === 'open') {
++    process.stdout.write('CONNECTED\n');
++    process.exit(0);
++  }
++});
+diff --git a/scripts/whatsapp-bridge/qr_saver.mjs b/scripts/whatsapp-bridge/qr_saver.mjs
+new file mode 100644
+index 000000000..b4b65138d
+--- /dev/null
++++ b/scripts/whatsapp-bridge/qr_saver.mjs
+@@ -0,0 +1,44 @@
++import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
++import { writeFileSync, mkdirSync } from 'fs';
++import { Boom } from '@hapi/boom';
++import pino from 'pino';
++
++const SESSION_DIR = '/home/ubuntu/.hermes/platforms/whatsapp/session';
++mkdirSync(SESSION_DIR, { recursive: true });
++
++const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
++const { version } = await fetchLatestBaileysVersion();
++
++const sock = makeWASocket({
++  version,
++  auth: state,
++  printQRInTerminal: false,
++  logger: pino({ level: 'silent' }),
++  browser: ['Hermes Agent', 'Chrome', '0.12.0'],
++  syncFullHistory: false,
++  markOnlineOnConnect: false,
++  emitOwnEvents: true,
++});
++
++console.log('PAIRING_STARTED');
++
++sock.ev.on('connection.update', async (update) => {
++  const { connection, lastDisconnect, qr } = update;
++  if (qr) {
++    writeFileSync('/tmp/whatsapp_qr_string.txt', qr);
++    console.log('QR_SAVED');
++  }
++  if (connection === 'close') {
++    const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
++    if (reason === DisconnectReason.loggedOut) {
++      console.log('LOGGED_OUT');
++      process.exit(1);
++    }
++  }
++  if (connection === 'open') {
++    console.log('CONNECTED');
++    process.exit(0);
++  }
++});
++
++sock.ev.on('creds.update', saveCreds);
+diff --git a/scripts/whatsapp-bridge/qr_webserver.mjs b/scripts/whatsapp-bridge/qr_webserver.mjs
+new file mode 100644
+index 000000000..febf7273d
+--- /dev/null
++++ b/scripts/whatsapp-bridge/qr_webserver.mjs
+@@ -0,0 +1,50 @@
++import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
++import qrcode from 'qrcode';
++import { writeFileSync, mkdirSync } from 'fs';
++import { Boom } from '@hapi/boom';
++import pino from 'pino';
++
++const SESSION_DIR = '/home/ubuntu/.hermes/platforms/whatsapp/session';
++mkdirSync(SESSION_DIR, { recursive: true });
++
++const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
++const { version } = await fetchLatestBaileysVersion();
++
++const sock = makeWASocket({
++  version, auth: state, printQRInTerminal: false,
++  logger: pino({ level: 'silent' }),
++  browser: ['Hermes Agent', 'Chrome', '0.12.0'],
++  syncFullHistory: false, markOnlineOnConnect: false, emitOwnEvents: true,
++});
++
++sock.ev.on('creds.update', saveCreds);
++
++sock.ev.on('connection.update', async (update) => {
++  const { connection, lastDisconnect, qr } = update;
++  if (qr) {
++    // Save QR as PNG + HTML page
++    await qrcode.toFile('/tmp/whatsapp_qr.png', qr, { type: 'png', width: 500, margin: 2 });
++    const html = `<!DOCTYPE html>
++<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Hermes WhatsApp QR</title>
++<style>body{background:#1a1a2e;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;font-family:sans-serif;color:#eee}
++h1{color:#e94560;margin-bottom:10px}p{color:#aaa;margin-bottom:20px;text-align:center}
++img{border-radius:12px;box-shadow:0 0 30px rgba(233,69,96,.3);max-width:90vw}</style></head>
++<body><h1>Scan to link Hermes</h1>
++<p>Open WhatsApp → Linked Devices → Link a Device<br>Scan this QR code with your phone</p>
++<img src="data:image/png;base64,${(await qrcode.toDataURL(qr, { width: 500, margin: 2 })).split(',')[1]}" />
++<p style="margin-top:30px;font-size:12px;color:#666">Auto-refresh every 30s — close this page when done</p>
++<script>setTimeout(()=>location.reload(),30000)</script>
++</body></html>`;
++    writeFileSync('/tmp/whatsapp_qr.html', html);
++    process.stdout.write('QR_GENERATED');
++  }
++  if (connection === 'open') {
++    process.stdout.write('CONNECTED');
++    process.exit(0);
++  }
++  if (connection === 'close') {
++    const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
++    if (reason === DisconnectReason.loggedOut) { process.exit(1); }
++  }
++});
+diff --git a/scripts/whatsapp-bridge/render_qr.mjs b/scripts/whatsapp-bridge/render_qr.mjs
+new file mode 100644
+index 000000000..d025234f3
+--- /dev/null
++++ b/scripts/whatsapp-bridge/render_qr.mjs
+@@ -0,0 +1,13 @@
++import qrcode from 'qrcode';
++import { readFileSync } from 'fs';
++const qrStr = readFileSync('/tmp/whatsapp_qr_string.txt', 'utf-8').trim();
++
++// Try different output types
++const utf8 = await qrcode.toString(qrStr, { type: 'utf8', small: false });
++process.stdout.write('=== UTF8 ===\n' + utf8 + '\n');
++
++const svg = await qrcode.toString(qrStr, { type: 'svg' });
++// Save SVG
++import { writeFileSync } from 'fs';
++writeFileSync('/tmp/whatsapp_qr.svg', svg);
++process.stdout.write('SVG saved\n');
+diff --git a/scripts/whatsapp-bridge/whatsapp_pair_phone.mjs b/scripts/whatsapp-bridge/whatsapp_pair_phone.mjs
+new file mode 100644
+index 000000000..1982e2203
+--- /dev/null
++++ b/scripts/whatsapp-bridge/whatsapp_pair_phone.mjs
+@@ -0,0 +1,77 @@
++import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
++import { mkdirSync } from 'fs';
++import { Boom } from '@hapi/boom';
++import pino from 'pino';
++
++const SESSION_DIR = '/home/ubuntu/.hermes/platforms/whatsapp/session';
++mkdirSync(SESSION_DIR, { recursive: true });
++
++// Get phone number from command line arg
++const phoneNumber = process.argv[2];
++if (!phoneNumber) {
++  console.error('Usage: node whatsapp_pair_phone.mjs <phone_number>');
++  console.error('  Include country code, no + or spaces');
++  console.error('  Example: node whatsapp_pair_phone.mjs 60123456789');
++  process.exit(1);
++}
++
++console.log(`WhatsApp phone pairing for: ${phoneNumber}`);
++console.log('');
++
++const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
++const { version } = await fetchLatestBaileysVersion();
++
++const sock = makeWASocket({
++  version,
++  auth: state,
++  printQRInTerminal: false,
++  logger: pino({ level: 'silent' }),
++  browser: ['Hermes Agent', 'Chrome', '0.12.0'],
++  syncFullHistory: false,
++  markOnlineOnConnect: false,
++  emitOwnEvents: true,
++});
++
++sock.ev.on('creds.update', saveCreds);
++
++sock.ev.on('connection.update', async (update) => {
++  const { connection, lastDisconnect } = update;
++  
++  if (connection === 'open') {
++    console.log('WhatsApp connected successfully!');
++    process.exit(0);
++  }
++  
++  if (connection === 'close') {
++    const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
++    if (reason === DisconnectReason.loggedOut) {
++      console.log('Logged out or pairing rejected.');
++      process.exit(1);
++    }
++    console.log('Disconnected, retrying...');
++  }
++});
++
++// Wait for socket to be ready, then request pairing code
++setTimeout(async () => {
++  try {
++    console.log('Requesting pairing code from WhatsApp...');
++    const code = await sock.requestPairingCode(phoneNumber);
++    console.log('');
++    console.log('========================================');
++    console.log('  OPEN WHATSAPP ON YOUR PHONE');
++    console.log('  Settings -> Linked Devices');
++    console.log('  Tap "Link a Device"');
++    console.log('  Then tap "Link with phone number instead"');
++    console.log('');
++    console.log(`  PAIRING CODE: ${code}`);
++    console.log('');
++    console.log('========================================');
++    console.log('');
++    console.log('Enter this code in WhatsApp on your phone.');
++    console.log('Waiting for connection...');
++  } catch (err) {
++    console.error('Pairing request failed:', err.message);
++    process.exit(1);
++  }
++}, 2000);

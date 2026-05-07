@@ -1,0 +1,102 @@
+diff --git a/hermes_state.py b/hermes_state.py
+index 98bd68bee..56715f30a 100644
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -952,6 +952,7 @@ class SessionDB:
+         self,
+         source: str = None,
+         exclude_sources: List[str] = None,
++        user_id: str = None,
+         limit: int = 20,
+         offset: int = 0,
+         include_children: bool = False,
+@@ -1009,6 +1010,9 @@ class SessionDB:
+             placeholders = ",".join("?" for _ in exclude_sources)
+             where_clauses.append(f"s.source NOT IN ({placeholders})")
+             params.extend(exclude_sources)
++        if user_id:
++            where_clauses.append("s.user_id = ?")
++            params.append(user_id)
+ 
+         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+         if order_by_last_active:
+@@ -1672,6 +1676,7 @@ class SessionDB:
+         source_filter: List[str] = None,
+         exclude_sources: List[str] = None,
+         role_filter: List[str] = None,
++        user_id: str = None,
+         limit: int = 20,
+         offset: int = 0,
+     ) -> List[Dict[str, Any]]:
+@@ -1684,8 +1689,8 @@ class SessionDB:
+           - Boolean: "docker OR kubernetes", "python NOT java"
+           - Prefix: "deploy*"
+ 
+-        Returns matching messages with session metadata, content snippet,
+-        and surrounding context (1 message before and after the match).
++        When user_id is provided, only returns messages from sessions
++        belonging to that user.  Used for per-identity session isolation.
+         """
+         if not query or not query.strip():
+             return []
+@@ -1713,6 +1718,10 @@ class SessionDB:
+             where_clauses.append(f"m.role IN ({role_placeholders})")
+             params.extend(role_filter)
+ 
++        if user_id:
++            where_clauses.append("s.user_id = ?")
++            params.append(user_id)
++
+         where_sql = " AND ".join(where_clauses)
+         params.extend([limit, offset])
+ 
+@@ -1915,10 +1924,15 @@ class SessionDB:
+     def search_sessions(
+         self,
+         source: str = None,
++        user_id: str = None,
+         limit: int = 20,
+         offset: int = 0,
+     ) -> List[Dict[str, Any]]:
+-        """List sessions, optionally filtered by source.
++        """List sessions, optionally filtered by source and/or user_id.
++
++        When user_id is provided, only returns sessions belonging to
++        that user.  Used for per-identity session isolation.
++        """
+ 
+         Returns rows enriched with a computed ``last_active`` column (latest
+         message timestamp for the session, falling back to ``started_at``),
+@@ -1933,19 +1947,20 @@ class SessionDB:
+             ") m ON m.session_id = s.id "
+         )
+         with self._lock:
++            where_parts = []
++            params_list = []
+             if source:
+-                cursor = self._conn.execute(
+-                    f"{select_with_last_active}"
+-                    "WHERE s.source = ? "
+-                    "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
+-                    (source, limit, offset),
+-                )
+-            else:
+-                cursor = self._conn.execute(
+-                    f"{select_with_last_active}"
+-                    "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
+-                    (limit, offset),
+-                )
++                where_parts.append("s.source = ?")
++                params_list.append(source)
++            if user_id:
++                where_parts.append("s.user_id = ?")
++                params_list.append(user_id)
++            where_sql = "WHERE " + " AND ".join(where_parts) + " " if where_parts else ""
++            cursor = self._conn.execute(
++                f"{select_with_last_active}{where_sql}"
++                "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
++                (*params_list, limit, offset),
++            )
+             return [dict(row) for row in cursor.fetchall()]
+ 
+     # =========================================================================

@@ -1,0 +1,22 @@
+diff --git a/cli.py b/cli.py
+index e5af3c88f..de8397b7b 100644
+--- a/cli.py
++++ b/cli.py
+@@ -10531,14 +10531,14 @@ class HermesCLI:
+                 self.agent.interrupt()
+             else:
+                 # If there's text or images, clear them (like bash).
+-                # If everything is already empty, exit.
++                # If everything is already empty, prompt to use /quit.
+                 if event.app.current_buffer.text or self._attached_images:
+                     event.app.current_buffer.reset()
+                     self._attached_images.clear()
+                     event.app.invalidate()
+                 else:
+-                    self._should_exit = True
+-                    event.app.exit()
++                    print("\n⚡ Use /quit or /exit to close Hermes.")
++                    event.app.invalidate()
+ 
+         # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
+         # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before
