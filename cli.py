@@ -10823,14 +10823,14 @@ class HermesCLI:
                 self.agent.interrupt()
             else:
                 # If there's text or images, clear them (like bash).
-                # If everything is already empty, exit.
+                # If everything is already empty, prompt to use /quit.
                 if event.app.current_buffer.text or self._attached_images:
                     event.app.current_buffer.reset()
                     self._attached_images.clear()
                     event.app.invalidate()
                 else:
-                    self._should_exit = True
-                    event.app.exit()
+                    print("\n⚡ Use /quit or /exit to close Hermes.")
+                    event.app.invalidate()
 
         # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
         # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before

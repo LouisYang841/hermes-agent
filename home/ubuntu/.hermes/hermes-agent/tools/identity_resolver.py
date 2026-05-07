@@ -1,0 +1,101 @@
+"""
+Identity Resolver — maps platform + user_id → canonical person.
+
+Each identity has:
+- name: display name (e.g. "louis", "42", "mom")
+- role: owner | trusted | user
+- platforms: dict of platform → user_id
+- notes: optional description
+
+Memory is stored in memories/<name>/ per identity.
+"""
+
+import os
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+IDENTITIES_PATH = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "identities.yaml"
+
+
+def _load_identities() -> Dict[str, Any]:
+    """Load identities from YAML file. Returns empty dict on failure."""
+    try:
+        import yaml
+        if IDENTITIES_PATH.exists():
+            with open(IDENTITIES_PATH) as f:
+                data = yaml.safe_load(f)
+            return data.get("identities", {}) if data else {}
+    except Exception:
+        pass
+    return {}
+
+
+def resolve_identity(platform: str, user_id: str) -> Dict[str, Any]:
+    """
+    Resolve (platform, user_id) to an identity dict.
+    
+    Returns:
+        {
+            "name": "louis",        # canonical identity name
+            "role": "owner",        # owner | trusted | user | guest
+            "notes": "...",         # optional description
+            "platform": platform,   # original platform
+            "user_id": user_id,     # original user_id
+        }
+    
+    If no identity matches, returns a transient guest identity.
+    """
+    identities = _load_identities()
+    
+    for name, identity in identities.items():
+        platforms = identity.get("platforms", {})
+        if platform in platforms and str(platforms[platform]) == str(user_id):
+            return {
+                "name": name,
+                "role": identity.get("role", "user"),
+                "notes": identity.get("notes", ""),
+                "platform": platform,
+                "user_id": user_id,
+            }
+    
+    # Unknown user → transient guest identity
+    return {
+        "name": f"guest_{user_id}",
+        "role": "guest",
+        "notes": "",
+        "platform": platform,
+        "user_id": user_id,
+    }
+
+
+def get_identity_name(platform: str, user_id: str) -> str:
+    """Shortcut: get just the identity name for memory directory."""
+    return resolve_identity(platform, user_id)["name"]
+
+
+def get_identity_role(platform: str, user_id: str) -> str:
+    """Shortcut: get just the role for permission checks."""
+    return resolve_identity(platform, user_id)["role"]
+
+
+def is_owner(platform: str, user_id: str) -> bool:
+    """Check if this user is the owner."""
+    return get_identity_role(platform, user_id) == "owner"
+
+
+def add_identity(name: str, role: str, platforms: dict, notes: str = ""):
+    """Add or update an identity in the YAML file."""
+    try:
+        import yaml
+        data = {"identities": _load_identities()}
+        data["identities"][name] = {
+            "name": name,
+            "role": role,
+            "notes": notes,
+            "platforms": platforms,
+        }
+        with open(IDENTITIES_PATH, "w") as f:
+            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+        return True
+    except Exception:
+        return False
