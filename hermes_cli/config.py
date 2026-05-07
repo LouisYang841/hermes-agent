@@ -1216,6 +1216,48 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        "policy": {
+            "mode": "configurable_rbac",
+            "cli_superuser": True,
+            "fail_open_when_profile_missing": True,
+            "invalid_agent_behavior": {
+                "cli": "fallback_owner",
+                "gateway": "deny",
+                "web": "fallback_shared",
+                "api_server": "deny",
+            },
+            "break_glass": {
+                "enabled": False,
+                "allow_shared_fallback_for_owner": True,
+            },
+            "audit": {
+                "log_denies": True,
+                "log_all_fallbacks": True,
+            },
+            "roles": {
+                "owner": {
+                    "allow": ["*"],
+                    "deny": [],
+                },
+                "trusted": {
+                    "allow": ["*"],
+                    "deny": ["terminal", "execute_code", "delegate_task"],
+                },
+                "guest": {
+                    "allow": [
+                        "clarify",
+                        "memory",
+                        "session_search",
+                        "skill_view",
+                        "skills_list",
+                        "todo",
+                        "read_file",
+                        "search_files",
+                    ],
+                    "deny": [],
+                },
+            },
+        },
         "website_blocklist": {
             "enabled": False,
             "domains": [],

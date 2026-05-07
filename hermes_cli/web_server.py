@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from agent.policy_config import load_policy_config
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -749,13 +750,16 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
-def _resolve_agent_db(agent_name: str = None):
-    """Resolve SessionDB for a named agent, or shared DB if not specified.
-    
-    Uses AgentRegistry to find the agent's per-agent state.db path.
-    Falls back to the shared SessionDB if AgentRegistry is unavailable
-    or the named agent is not found.
-    """
+def _policy_invalid_agent_behavior(source: str = "web") -> str:
+    cfg = load_policy_config()
+    mapping = cfg.get("invalid_agent_behavior", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(mapping, dict):
+        return "deny"
+    return str(mapping.get(source, "deny") or "deny").strip().lower()
+
+
+def _resolve_agent_db(agent_name: str = None, source: str = "web"):
+    """Resolve SessionDB for a named agent according to policy config."""
     from hermes_state import SessionDB
     if not agent_name:
         return SessionDB()
@@ -765,9 +769,29 @@ def _resolve_agent_db(agent_name: str = None):
         profile = reg.get(agent_name)
         if profile and profile.session_db_path.exists():
             return SessionDB(db_path=str(profile.session_db_path))
-    except Exception:
-        pass
-    return SessionDB()
+        behavior = _policy_invalid_agent_behavior(source)
+        if behavior == "fallback_shared":
+            _log.warning(
+                "Policy fallback to shared SessionDB: source=%s agent=%s",
+                source,
+                agent_name,
+            )
+            return SessionDB()
+        raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to resolve agent DB: source=%s agent=%s", source, agent_name)
+        behavior = _policy_invalid_agent_behavior(source)
+        if behavior == "fallback_shared":
+            _log.warning(
+                "Policy fallback to shared SessionDB after error: source=%s agent=%s err=%s",
+                source,
+                agent_name,
+                exc,
+            )
+            return SessionDB()
+        raise HTTPException(status_code=500, detail="Failed to resolve agent session DB")
 
 
 @app.get("/api/agents")
@@ -787,6 +811,11 @@ async def list_agents():
         return {"agents": []}
 
 
+@app.get("/api/policy/config")
+async def get_policy_config():
+    return {"policy": load_policy_config()}
+
+
 @app.get("/api/memory")
 async def get_memory(agent: str = None):
     """Read MEMORY.md and USER.md for a given agent (or shared if not specified)."""
@@ -799,8 +828,7 @@ async def get_memory(agent: str = None):
                 reg = get_agent_registry()
                 profile = reg.get(agent)
                 if profile:
-                    # Per-agent memory is under ~/.hermes/memories/<name>/
-                    mem_dir = Path(profile.agent_dir).parent.parent / "memories" / agent
+                    mem_dir = profile.memory_dir
             except Exception:
                 pass
         if not mem_dir or not (mem_dir / "MEMORY.md").exists():
@@ -826,7 +854,7 @@ async def get_memory(agent: str = None):
 @app.get("/api/sessions")
 async def get_sessions(limit: int = 20, offset: int = 0, agent: str = None):
     try:
-        db = _resolve_agent_db(agent)
+        db = _resolve_agent_db(agent, source="web")
         try:
             sessions = db.list_sessions_rich(limit=limit, offset=offset)
             total = db.session_count()
@@ -850,7 +878,7 @@ async def search_sessions(q: str = "", limit: int = 20, agent: str = None):
     if not q or not q.strip():
         return {"results": []}
     try:
-        db = _resolve_agent_db(agent)
+        db = _resolve_agent_db(agent, source="web")
         try:
             # Auto-add prefix wildcards so partial words match
             # e.g. "nimb" → "nimb*" matches "nimby"
@@ -2316,7 +2344,7 @@ def _session_latest_descendant(session_id: str):
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, agent: str = None):
     from hermes_state import SessionDB
-    db = _resolve_agent_db(agent)
+    db = _resolve_agent_db(agent, source="web")
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
@@ -2342,7 +2370,7 @@ async def get_session_latest_descendant(session_id: str):
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, agent: str = None):
-    db = _resolve_agent_db(agent)
+    db = _resolve_agent_db(agent, source="web")
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -2355,7 +2383,7 @@ async def get_session_messages(session_id: str, agent: str = None):
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str, agent: str = None):
-    db = _resolve_agent_db(agent)
+    db = _resolve_agent_db(agent, source="web")
     try:
         if not db.delete_session(session_id):
             raise HTTPException(status_code=404, detail="Session not found")

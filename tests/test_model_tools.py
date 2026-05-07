@@ -112,6 +112,29 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_policy_block_returns_error_and_skips_dispatch(self, monkeypatch):
+        from pathlib import Path
+        from tools.agent_profile import AgentProfile
+
+        profile = AgentProfile(
+            key="guest_1",
+            user_name="guest_1",
+            agent_name="Hermes",
+            role="guest",
+            agent_dir=Path("/tmp/guest_1"),
+        )
+
+        monkeypatch.setattr("model_tools.get_current_profile", lambda: profile)
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dispatch should not run")),
+        )
+
+        result = json.loads(handle_function_call("terminal", {"command": "whoami"}))
+        assert "error" in result
+        assert "Blocked by policy" in result["error"]
+        assert result["code"] == "deny_role_guest"
+
 
 # =========================================================================
 # Agent loop tools

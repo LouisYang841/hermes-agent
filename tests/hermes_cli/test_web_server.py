@@ -269,6 +269,66 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 401
 
+    def test_get_policy_config_endpoint(self):
+        resp = self.client.get("/api/policy/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "policy" in data
+        assert isinstance(data["policy"], dict)
+        assert "roles" in data["policy"]
+
+
+class TestWebServerAgentDbPolicy:
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_resolve_agent_db_invalid_agent_denied(self, monkeypatch, _isolate_hermes_home):
+        import hermes_cli.web_server as ws
+        from fastapi import HTTPException
+
+        class _Reg:
+            def get(self, _name):
+                return None
+
+        monkeypatch.setattr(ws, "load_policy_config", lambda: {"invalid_agent_behavior": {"web": "deny"}})
+        monkeypatch.setattr("tools.agent_registry.get_agent_registry", lambda: _Reg())
+
+        with pytest.raises(HTTPException) as exc:
+            ws._resolve_agent_db("missing-agent", source="web")
+        assert exc.value.status_code == 404
+
+    def test_resolve_agent_db_invalid_agent_fallback_shared(self, monkeypatch, _isolate_hermes_home):
+        import hermes_cli.web_server as ws
+
+        class _Reg:
+            def get(self, _name):
+                return None
+
+        monkeypatch.setattr(
+            ws,
+            "load_policy_config",
+            lambda: {"invalid_agent_behavior": {"web": "fallback_shared"}},
+        )
+        monkeypatch.setattr("tools.agent_registry.get_agent_registry", lambda: _Reg())
+
+        db = ws._resolve_agent_db("missing-agent", source="web")
+        try:
+            assert hasattr(db, "list_sessions_rich")
+        finally:
+            db.close()
+
     def test_reveal_env_var_custom_session_header_ignores_proxy_authorization(self, tmp_path):
         """A valid dashboard session header should coexist with proxy auth."""
         from hermes_cli.config import save_env_value
