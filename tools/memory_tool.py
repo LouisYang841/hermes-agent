@@ -1031,6 +1031,9 @@ def memory_tool(
 
     if action == "add":
         result = store.add(target, content)
+        # OB sync: fire-and-forget hold on memory write
+        if result.get("success"):
+            _maybe_sync_to_ombre(content)
 
     elif action == "replace":
         result = store.replace(target, old_text, content)
@@ -1062,12 +1065,47 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     if action == "batch":
         return store.apply_batch(target, payload.get("operations") or [])
     if action == "add":
-        return store.add(target, content)
+        result = store.add(target, content)
+        # OB sync: fire-and-forget hold on memory write
+        if result.get("success"):
+            _maybe_sync_to_ombre(content)
+        return result
     if action == "replace":
         return store.replace(target, old_text, content)
     if action == "remove":
         return store.remove(target, old_text)
     return {"success": False, "error": f"Unknown staged action '{action}'."}
+
+
+# ── Ombre-Brain auto-sync ──────────────────────────────────────────────────────
+
+
+def _maybe_sync_to_ombre(content: str) -> None:
+    """Fire-and-forget: sync newly written memory to Ombre-Brain via hold.
+    Runs in a daemon thread. Silent on failure."""
+    import threading, subprocess, sys, os
+    bridge = os.path.expanduser("~/.hermes/scripts/ombre_bridge.py")
+    if not os.path.exists(bridge):
+        return
+
+    # gateway 已设 HERMES_SESSION_USER_ID，CLI 会话无此值则留空
+    human = os.environ.get("HERMES_SESSION_USER_ID", "") or ""
+
+    def _run():
+        try:
+            cmd = [sys.executable, bridge, "hold", content]
+            if human:
+                cmd += ["--human", human]
+            subprocess.run(
+                cmd, timeout=15, capture_output=True,
+            )
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+# =============================================================================
 # OpenAI Function-Calling Schema
 # =============================================================================
 
