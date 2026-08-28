@@ -709,6 +709,13 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     if not isinstance(sp, str) or not sp:
         return active_system_prompt
     if api_messages and api_messages[0].get("role") == "system":
+        if getattr(agent, "dsh_minimal_mode", False):
+            # DSH Minimal Mode: keep the harness-identical persona on the
+            # wire even after a provider failover; the manual stays in the
+            # body (first user message), never here.
+            from agent.dsh_minimal import DSH_MINIMAL_SYSTEM_PROMPT
+            api_messages[0]["content"] = DSH_MINIMAL_SYSTEM_PROMPT
+            return sp
         effective = sp
         if agent.ephemeral_system_prompt:
             effective = (effective + "\n\n" + agent.ephemeral_system_prompt).strip()
@@ -1282,7 +1289,29 @@ def run_conversation(
         # bytes are byte-stable across turns and upstream prompt caches
         # stay warm.
         effective_system = active_system_prompt or ""
-        if agent.ephemeral_system_prompt:
+        if getattr(agent, "dsh_minimal_mode", False):
+            # DSH Minimal Mode: the API system prompt is byte-identical to
+            # the harness's fixed persona; the full Hermes prompt + complete
+            # tool catalog rides in the body (first user message).
+            from agent.dsh_minimal import (
+                DSH_MANUAL_HEADER,
+                DSH_MINIMAL_SYSTEM_PROMPT,
+                compose_dsh_manual,
+            )
+            effective_system = DSH_MINIMAL_SYSTEM_PROMPT
+            _dsh_manual = compose_dsh_manual(agent)
+            for _dsh_i, _dsh_m in enumerate(api_messages):
+                if _dsh_m.get("role") == "user":
+                    _dsh_c = _dsh_m.get("content")
+                    if isinstance(_dsh_c, str) and not _dsh_c.startswith(DSH_MANUAL_HEADER):
+                        api_messages[_dsh_i] = {**_dsh_m, "content": _dsh_manual + "\n\n" + _dsh_c}
+                    elif isinstance(_dsh_c, list):
+                        api_messages[_dsh_i] = {
+                            **_dsh_m,
+                            "content": [{"type": "text", "text": _dsh_manual}] + _dsh_c,
+                        }
+                    break
+        if agent.ephemeral_system_prompt and not getattr(agent, "dsh_minimal_mode", False):
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages

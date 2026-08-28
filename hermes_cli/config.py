@@ -1007,6 +1007,14 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # DSH Minimal Mode — replicate the DeepSeek Harness "minimal" agent
+        # preset inside Hermes: API system prompt becomes the harness's fixed
+        # persona and the declared tool schema shrinks to bash +
+        # str_replace_editor, while the full Hermes prompt + complete tool
+        # catalog rides in the message body.  Designed for reasoning models
+        # whose CoT overfits to the harness scaffold (deepseek-v4-pro-0813).
+        # See agent/dsh_minimal.py.  Set True to enable.
+        "dsh_minimal_mode": False,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

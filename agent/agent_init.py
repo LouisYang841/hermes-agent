@@ -1396,6 +1396,21 @@ def init_agent(
     elif not agent.quiet_mode:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
 
+    # DSH Minimal Mode: shrink the DECLARED tool schema to the two-tool
+    # composition the model was RL-trained under (bash + str_replace_editor);
+    # the full catalog rides in the message body. See agent/dsh_minimal.py.
+    try:
+        from agent.dsh_minimal import apply_dsh_minimal_mode
+        _dsh_applied = apply_dsh_minimal_mode(agent)
+        if _dsh_applied and not agent.quiet_mode:
+            print(
+                "🛠️  DSH Minimal Mode: declared schema = bash + str_replace_editor "
+                f"({len(agent.valid_tool_names)} tools still dispatchable by name)"
+            )
+    except Exception as _dsh_err:
+        agent.dsh_minimal_mode = False
+        logger.warning("DSH Minimal Mode apply failed: %s", _dsh_err)
+
     # Kanban worker/orchestrator lifecycle guidance is session-static:
     # the dispatcher decides at spawn time whether this process is a kanban
     # worker (kanban_show tool is present iff HERMES_KANBAN_TASK is set).

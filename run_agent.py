@@ -6528,6 +6528,17 @@ class AIAgent:
                      skip_tool_request_middleware: bool = False,
                      tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
+        # DSH Minimal Mode: translate harness-alias tool names (bash /
+        # str_replace_editor) to the real Hermes tools BEFORE anything else
+        # sees them, so approval, hooks, guardrails and arg coercion all run
+        # against the real tool. No-op when the mode is off.
+        try:
+            from agent.dsh_minimal import resolve_dsh_tool_call
+            function_name, function_args = resolve_dsh_tool_call(
+                self, function_name, function_args
+            )
+        except Exception:
+            pass
         from agent.agent_runtime_helpers import invoke_tool
         return invoke_tool(
             self,
