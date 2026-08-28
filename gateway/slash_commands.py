@@ -4388,13 +4388,32 @@ class GatewaySlashCommandsMixin:
             # Session token usage — detailed breakdown matching CLI
             input_tokens = getattr(agent, "session_input_tokens", 0) or 0
             output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+            cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
+            cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
+            reasoning = getattr(agent, "session_reasoning_tokens", 0) or 0
+            estimated_cost = getattr(agent, "session_estimated_cost_usd", None)
 
             lines.append(t("gateway.usage.header_session"))
             lines.append(t("gateway.usage.label_model", model=agent.model))
-            lines.append(t("gateway.usage.label_input_tokens", count=f"{input_tokens:,}"))
-            lines.append(t("gateway.usage.label_output_tokens", count=f"{output_tokens:,}"))
+
+            # Token counts (compact one-liner)
+            parts = [f"↑{input_tokens:,}", f"↓{output_tokens:,}"]
+            if reasoning:
+                parts.append(f"R{reasoning:,}")
+            if cache_read:
+                parts.append(f"CR{cache_read:,}")
+            lines.append("`" + " ".join(parts) + "`")
+
+            if cache_write:
+                lines.append(t("gateway.usage.label_cache_write", count=f"{cache_write:,}"))
+
             lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
             lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))
+
+            # Estimated cost with yuan conversion (rate: 1 USD ≈ 6.77 CNY)
+            if estimated_cost and estimated_cost > 0:
+                yuan = estimated_cost * 6.77
+                lines.append(t("gateway.usage.label_cost", prefix="", amount=f"{estimated_cost:.4f}  ≈  ¥{yuan:.2f}"))
 
             # Context window and compressions
             ctx = agent.context_compressor

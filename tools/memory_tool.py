@@ -1088,8 +1088,13 @@ def _maybe_sync_to_ombre(content: str) -> None:
     if not os.path.exists(bridge):
         return
 
-    # gateway 已设 HERMES_SESSION_USER_ID，CLI 会话无此值则留空
-    human = os.environ.get("HERMES_SESSION_USER_ID", "") or ""
+    # gateway 用 ContextVar 存 HERMES_SESSION_USER_ID（并发安全），os.environ 读不到；
+    # 用官方 get_session_env() 读取，CLI/cron 未绑定 session 时回退 os.environ（通常为空）。
+    try:
+        from gateway.session_context import get_session_env
+        human = get_session_env("HERMES_SESSION_USER_ID", "") or ""
+    except Exception:
+        human = os.environ.get("HERMES_SESSION_USER_ID", "") or ""
 
     def _run():
         try:
