@@ -180,9 +180,12 @@ _MEMORY_REVIEW_PROMPT = (
 
 _SKILL_REVIEW_PROMPT = (
     "Review the conversation above and update the skill library. Be "
-    "ACTIVE — most sessions produce at least one skill update, even if "
-    "small. A pass that does nothing is a missed learning opportunity, "
-    "not a neutral outcome.\n\n"
+    "SELECTIVE — most sessions do NOT warrant a new skill. Prefer "
+    "patching existing skills with new pitfalls; only CREATE a new "
+    "skill when a genuinely reusable, non-trivial workflow emerged "
+    "that a future session would need. A review pass that only "
+    "patches existing skills is a good outcome; a pass that creates "
+    "nothing is neutral and fine.\n\n"
     "Target shape of the library: CLASS-LEVEL skills, each with a rich "
     "SKILL.md and a `references/` directory for session-specific detail. "
     "Not a long flat list of narrow one-session-one-skill entries. This "
@@ -233,8 +236,11 @@ _SKILL_REVIEW_PROMPT = (
     "file_path starting 'references/', 'templates/', or 'scripts/'. "
     "The umbrella's SKILL.md should gain a one-line pointer to any "
     "new support file so future agents know it exists.\n"
-    "  4. CREATE A NEW CLASS-LEVEL UMBRELLA SKILL when no existing "
-    "skill covers the class. The name MUST be at the class level. "
+    "  4. CREATE A NEW CLASS-LEVEL UMBRELLA SKILL only when no existing "
+    "skill covers the class AND the workflow is clearly reusable beyond "
+    "this session. One-off chat topics, simple Q&A, single-session "
+    "details, and niche one-time setups do NOT warrant creation. The "
+    "name MUST be at the class level. "
     "The name MUST NOT be a specific PR number, error string, feature "
     "codename, library-alone name, or 'fix-X / debug-Y / audit-Z-today' "
     "session artifact. If the proposed name only makes sense for "
@@ -923,6 +929,9 @@ def _run_review_in_thread(
                 except Exception:
                     pass
 
+            # OB sync: fire-and-forget dream after successful review
+            _maybe_ombre_dream_after_review()
+
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         agent._emit_auxiliary_failure("background review", e)
@@ -979,6 +988,29 @@ def spawn_background_review_thread(
         _run_review_in_thread(agent, messages_snapshot, prompt)
 
     return _target, prompt
+
+
+# ── Ombre-Brain dream after review ─────────────────────────────────────────────
+
+
+def _maybe_ombre_dream_after_review() -> None:
+    """Fire-and-forget: trigger Ombre-Brain dream after background memory review.
+    Runs in a daemon thread. Silent on failure."""
+    import threading, subprocess, sys, os
+    bridge = os.path.expanduser("~/.hermes/scripts/ombre_bridge.py")
+    if not os.path.exists(bridge):
+        return
+
+    def _run():
+        try:
+            subprocess.run(
+                [sys.executable, bridge, "dream"],
+                timeout=20, capture_output=True,
+            )
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 __all__ = [
