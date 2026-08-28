@@ -51,17 +51,67 @@ def resolve_dsh_tool_call(agent: Any, name: str, args: dict) -> Tuple[str, dict]
     No-op when the mode is off or the name isn't an alias.  Called from
     ``run_agent.AIAgent._invoke_tool`` — the single dispatch choke point —
     so every downstream layer sees the real tool name.
+
+    ``str_replace_editor`` is a multi-command tool (view / create /
+    str_replace / insert); each command routes to the matching Hermes tool:
+    view -> read_file, create -> write_file, str_replace -> patch,
+    insert -> terminal+python (Hermes patch has no insert mode).
     """
     if not getattr(agent, "dsh_minimal_mode", False):
         return name, args
     real = DSH_TOOL_ALIASES.get(name)
     if real is None:
         return name, args
-    if real == "patch" and isinstance(args, dict):
-        args = dict(args)
-        args.setdefault("mode", "replace")  # patch requires mode
-        args.pop("view_range", None)        # DSH editor-only param
-    return real, args
+    if name == "bash":
+        return "terminal", args
+    if name == "str_replace_editor":
+        return _resolve_editor_call(args)
+    return name, args
+
+
+def _resolve_editor_call(args: dict) -> Tuple[str, dict]:
+    import shlex
+
+    args = dict(args or {})
+    cmd = (args.get("command") or "").strip()
+    path = args.get("path") or ""
+
+    if cmd == "view":
+        vr = args.get("view_range") or None
+        if isinstance(vr, list) and len(vr) == 2:
+            start, end = int(vr[0]), int(vr[1])
+            if end == -1:
+                return "read_file", {"path": path, "offset": start, "limit": 2000}
+            return "read_file", {"path": path, "offset": start, "limit": max(1, end - start + 1)}
+        return "read_file", {"path": path}
+
+    if cmd == "create":
+        return "write_file", {"path": path, "content": args.get("file_text") or ""}
+
+    if cmd == "str_replace":
+        return "patch", {
+            "mode": "replace",
+            "path": path,
+            "old_string": args.get("old_str") or "",
+            "new_string": args.get("new_str") or "",
+        }
+
+    if cmd == "insert":
+        line = int(args.get("insert_line") or 0)
+        text = args.get("new_str") or ""
+        script = (
+            "import sys;"
+            f"p={shlex.quote(path)};"
+            f"n={line};"
+            f"t={shlex.quote(text)};"
+            "ls=open(p).read().splitlines(keepends=True);"
+            "ls.insert(n, t if t.endswith(chr(10)) else t+chr(10));"
+            "open(p,'w').writelines(ls)"
+        )
+        return "terminal", {"command": f"python3 -c {shlex.quote(script)}"}
+
+    # Unknown/missing command: degrade to a read so the model can recover.
+    return "read_file", {"path": path}
 
 
 def _bash_schema() -> Dict[str, Any]:
@@ -90,25 +140,64 @@ def _bash_schema() -> Dict[str, Any]:
     }
 
 
+# Exact DEFAULT_DESCRIPTION from DeepSeek Harness
+# packages/fs/tool-str-replace-editor/src/index.ts (verified 2026-08-28).
+DSH_EDITOR_DESCRIPTION = """Custom editing tool for viewing, creating and editing files
+* State is persistent across command calls and discussions with the user
+* If `path` is a file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep
+* The `create` command cannot be used if the specified `path` already exists as a file
+* If a `command` generates a long output, it will be truncated and marked with `<response clipped>`
+* A null placeholder for a parameter unused by the selected command is treated as omitted. Required parameters still need values; omit `str_replace.new_str` rather than setting it to null when deleting a match
+
+Notes for using the `str_replace` command:
+* The `old_str` parameter should match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!
+* If the `old_str` parameter is not unique in the file, the replacement will not be performed. Make sure to include enough context in `old_str` to make it unique
+* The `new_str` parameter should contain the edited lines that should replace the `old_str`"""
+
+
 def _editor_schema() -> Dict[str, Any]:
+    """Exact DeepSeek Harness str_replace_editor schema (multi-command:
+    view / create / str_replace / insert).  Verified against
+    packages/fs/tool-str-replace-editor/src/index.ts registerStrReplaceEditor."""
     return {
         "type": "function",
         "function": {
             "name": "str_replace_editor",
-            "description": (
-                "Edit files on disk using exact string replacement (mirrors the DeepSeek Harness "
-                "minimal-preset editor). Paths must be absolute. old_string must match exactly one "
-                "occurrence in the file."
-            ),
+            "description": DSH_EDITOR_DESCRIPTION,
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Absolute path to the file to edit."},
-                    "old_string": {"type": "string", "description": "Exact text to replace (must appear exactly once)."},
-                    "new_string": {"type": "string", "description": "Replacement text."},
-                    "view_range": {"type": "array", "items": {"type": "integer"}, "description": "Optional [start, end] line range to view."},
+                    "command": {
+                        "type": "string",
+                        "enum": ["view", "create", "str_replace", "insert"],
+                        "description": "The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`.",
+                    },
+                    "file_text": {
+                        "oneOf": [{"type": "string"}, {"type": "null"}],
+                        "description": "Required string parameter of `create` command, with the content of the file to be created. A null placeholder is treated as omitted by commands that do not use this parameter.",
+                    },
+                    "insert_line": {
+                        "oneOf": [{"type": "integer"}, {"type": "null"}],
+                        "description": "Required integer parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`. A null placeholder is treated as omitted by commands that do not use this parameter.",
+                    },
+                    "new_str": {
+                        "oneOf": [{"type": "string"}, {"type": "null"}],
+                        "description": "Optional string parameter of `str_replace` command containing the new string (if omitted, no string will be added). Required string parameter of `insert` command containing the string to insert. A null placeholder is accepted only by commands that do not use this parameter.",
+                    },
+                    "old_str": {
+                        "oneOf": [{"type": "string"}, {"type": "null"}],
+                        "description": "Required string parameter of `str_replace` command containing the string in `path` to replace. A null placeholder is treated as omitted by commands that do not use this parameter.",
+                    },
+                    "view_range": {
+                        "oneOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}],
+                        "description": "Optional parameter of `view` command when `path` points to a file. If omitted or null, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file.",
+                    },
                 },
-                "required": ["path", "old_string", "new_string"],
+                "required": ["command", "path"],
             },
         },
     }
